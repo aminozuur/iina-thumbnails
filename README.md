@@ -2,6 +2,13 @@
 
 An IINA plugin that shows clickable thumbnails for each video.
 
+
+
+https://github.com/user-attachments/assets/0e3ad370-6468-4943-838e-8a7efebb42ab
+
+
+
+
 ![Thumbnails preview](screenshots/preview.jpeg)
 
 ## Features
