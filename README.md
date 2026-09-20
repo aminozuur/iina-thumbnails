@@ -6,38 +6,44 @@ An IINA plugin that shows clickable thumbnails for each video.
 
 ## Features
 
-- Browse a video with a grid of thumbnails
-- Click any thumbnail to jump to that point in the video
-- Choose 10, 15, 20, 30, 40, 60, or 100 thumbnails, using a simple slider
-- Optional background blur
-- Thumbnails use IINA’s native thumbnail cache, so it does not use any extra storage or CPU power
-- The grid updates while the IINA window is resized
+- See a grid of thumbnails from across the video
+- Click a thumbnail to jump to that point
+- Choose 10, 15, 20, 30, 40, 60, or 100 thumbnails
+- Change the number of thumbnails with a simple slider
+- Turn background blur on or off
+- Uses IINA's own thumbnail cache, so it does not create another thumbnail cache
+- The grid updates while you resize the IINA window
 
 ## Install
 
 ### From IINA
 
-Open **IINA → Settings → Plugins → Install from GitHub…** and enter:
+Open:
+
+**IINA → Settings → Plugins → Install from GitHub…**
+
+Enter:
 
 `aminozuur/iina-thumbnails`
 
-### From a release package
+### From a release
 
-Download the latest `.iinaplgz` file from the [Releases](https://github.com/aminozuur/iina-thumbnails/releases) page and install it in IINA.
+Download the latest `.iinaplgz` file from the [Releases](https://github.com/aminozuur/iina-thumbnails/releases) page and open it with IINA.
 
 ## Permissions
 
-Thumbnails requires these IINA permissions:
+Thumbnails needs two IINA permissions:
 
-- **Access the file system** — reads IINA's native thumbnail cache.
-- **Add overlays on videos** — displays the thumbnail grid and controls over the video.
+- **Access the file system** — reads IINA's thumbnail cache.
+- **Add overlays on videos** — shows the thumbnails and controls on top of the video.
 
 ## Author
 
-**Amin Eftegarie**  
+**Amin Eftegarie**
+
 Email: [amin@eftegarie.com](mailto:amin@eftegarie.com)  
 Website: [eftegarie.com](https://eftegarie.com/)
 
 ## License
 
-No open-source license has been selected yet.
+[MIT License](LICENSE.md)
