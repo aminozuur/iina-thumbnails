@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Thumbnails Preferences</title></head>
+<body>
+  <div class="pref-section">
+    <label for="thumbnail-count"><strong>Thumbnail count</strong></label>
+    <div style="margin-top:6px">
+      <select id="thumbnail-count" style="min-width:180px">
+        <option value="10">10 thumbnails</option>
+        <option value="15">15 thumbnails</option>
+        <option value="20">20 thumbnails</option>
+        <option value="30">30 thumbnails</option>
+        <option value="40">40 thumbnails</option>
+        <option value="60">60 thumbnails</option>
+        <option value="100">100 thumbnails</option>
+      </select>
+    </div>
+    <p class="small secondary pref-help">20 is the default. The layout automatically chooses the best number of columns to keep thumbnails large and balanced.</p>
+  </div>
+  <script>
+    const select = document.getElementById('thumbnail-count');
+    const { preferences } = window.iina;
+    const allowed = new Set([10, 15, 20, 30, 40, 60, 100]);
+
+    preferences.get('thumbnail_count', (value) => {
+      const n = Number(value);
+      select.value = String(allowed.has(n) ? n : 20);
+    });
+
+    select.addEventListener('change', () => {
+      const n = Number(select.value);
+      if (!allowed.has(n)) return;
+      preferences.set('thumbnail_count', n);
+      preferences.sync();
+    });
+  </script>
+</body>
+</html>

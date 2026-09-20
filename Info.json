@@ -1,0 +1,24 @@
+{
+  "name": "Thumbnails",
+  "identifier": "com.amin.thumbnail",
+  "version": "1.7.35",
+  "description": "See thumbnails for any video, and click a thumb to jump to that point. You can also change amount of thumbnails using a simple slider, that goes from 10 all the way to 100.",
+  "author": {
+    "name": "Amin Eftegarie",
+    "email": "amin@eftegarie.com",
+    "url": "https://eftegarie.com/"
+  },
+  "entry": "main.js",
+  "globalEntry": "global.js",
+  "permissions": [
+    "file-system",
+    "video-overlay"
+  ],
+  "preferencesPage": "preferences.html",
+  "preferenceDefaults": {
+    "thumbnail_count": 20
+  },
+  "helpPage": "about.html",
+  "ghRepo": "aminozuur/iina-thumbnails",
+  "ghVersion": 1
+}
