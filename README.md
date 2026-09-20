@@ -6,13 +6,12 @@ An IINA plugin that shows clickable thumbnails for each video.
 
 ## Features
 
-- Browse a video with a grid of thumbnails.
-- Click any thumbnail to jump to that point in the video.
-- Choose 10, 15, 20, 30, 40, 60, or 100 thumbnails.
-- The thumbnail controls stay fixed while the grid rearranges.
-- Optional background blur.
-- Thumbnails use IINA's native thumbnail cache.
-- The grid updates while the IINA window is resized.
+- Browse a video with a grid of thumbnails
+- Click any thumbnail to jump to that point in the video
+- Choose 10, 15, 20, 30, 40, 60, or 100 thumbnails, using a simple slider
+- Optional background blur
+- Thumbnails use IINA’s native thumbnail cache, so it does not use any extra storage or CPU power
+- The grid updates while the IINA window is resized
 
 ## Install
 
