@@ -2,7 +2,7 @@
   "name": "Thumbnails",
   "identifier": "com.amin.thumbnail",
   "version": "1.7.36",
-  "description": "See thumbnails for any video, and click a thumb to jump to that point. You can also change amount of thumbnails using a simple slider, that goes from 10 all the way to 100.",
+  "description": "See thumbnails for any video, and click a thumb to jump to that point. You can also change amount of thumbnails using a simple slider, that goes from 10 all the way to 100. Hover a thumbnail to preview that part of the video (needs ffmpeg).",
   "author": {
     "name": "Amin Eftegarie",
     "email": "amin@eftegarie.com",
