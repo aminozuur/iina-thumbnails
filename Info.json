@@ -1,7 +1,7 @@
 {
   "name": "Thumbnails",
   "identifier": "com.amin.thumbnail",
-  "version": "1.7.35",
+  "version": "1.7.36",
   "description": "See thumbnails for any video, and click a thumb to jump to that point. You can also change amount of thumbnails using a simple slider, that goes from 10 all the way to 100.",
   "author": {
     "name": "Amin Eftegarie",
