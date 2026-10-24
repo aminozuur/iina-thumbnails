@@ -19,7 +19,7 @@ function columnsForCount(n){
   return bestCols;
 }
 let count=DEFAULT_COUNT;
-let visible=false, overlayReady=false, thumbs=[], mouseHandlerInstalled=false, pollTimer=null, resizeWatchTimer=null, lastResizeW=0, lastResizeH=0, blurEnabled=true;
+let visible=false, overlayReady=false, thumbs=[], mouseHandlerInstalled=false, pollTimer=null, resizeWatchTimer=null, lastResizeW=0, lastResizeH=0, blurEnabled=true, selected=-1, previewEnabled=true, hoverTimer=null, hoverIdx=-1, ffmpegPath, previewCache=new Map();
 
 function getCount(){
   const n=Number(preferences.get("thumbnail_count"));
@@ -29,11 +29,93 @@ function refreshCount(){
   count=getCount();
   const storedBlur=preferences.get("background_blur");
   blurEnabled = storedBlur === undefined || storedBlur === null ? true : Boolean(storedBlur);
+  const storedPreview=preferences.get("hover_preview");
+  previewEnabled = storedPreview === undefined || storedPreview === null ? true : Boolean(storedPreview);
 }
+// Hover preview: a short run of frames pulled with ffmpeg and flipped through inside the hovered thumbnail.
+function ffmpeg(){
+  if(ffmpegPath===undefined)ffmpegPath=['/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg','/usr/bin/ffmpeg'].find(p=>file.exists(p))||'';
+  return ffmpegPath;
+}
+function previewLabel(){return ffmpeg()?'Play on hover':'Play on hover (needs ffmpeg)';}
+// Control-bar geometry, shared by the CSS widths and the native click hit-testing.
+// Offsets are relative to the horizontal center of the video; 7.2188 is the 12px monospace advance.
+function barLayout(){
+  const blurW=130, prevW=Math.ceil(previewLabel().length*7.2188+19)+2;
+  const lead=10+10*7.2188+9+120+9+22+9;
+  const total=lead+6+blurW+9+6+prevW+10;
+  const blurL=-total/2+lead+6, prevL=blurL+blurW+9+6;
+  return {blurL,blurR:blurL+blurW,prevL,prevR:prevL+prevW,prevW};
+}
+// Clips are small silent h264 mp4s cut by ffmpeg straight from the video file (the same approach as
+// the Bookmarks plugin), so the overlay can play them in a normal <video>.
+const CLIP_SECONDS=4, CLIP_WIDTH=360;
+const ENCODERS=[["-c:v","libx264","-crf","28","-preset","veryfast"],["-c:v","h264_videotoolbox","-b:v","600k"]];
+let clipGen=0;
+async function makeClip(source,time,idx){
+  const out=utils.resolvePath(`@tmp/thumbnails-clip-${idx}.mp4`);
+  for(const enc of ENCODERS){
+    try{
+      const done=await utils.exec(ffmpeg(),["-v","error","-y","-ss",String(Math.max(0,time)),"-i",source,"-t",String(CLIP_SECONDS),"-an","-sn","-vf",`scale=${CLIP_WIDTH}:-2:in_color_matrix=auto:out_color_matrix=bt709:out_range=tv`,"-pix_fmt","yuv420p","-colorspace","bt709","-color_primaries","bt709","-color_trc","bt709",...enc,"-movflags","+faststart",out]);
+      if(done.status!==0)continue;
+      const b64=await utils.exec("/usr/bin/base64",["-i",out]);
+      try{file.delete(out);}catch(_){}
+      if(b64.status===0)return "data:video/mp4;base64,"+String(b64.stdout).replace(/\s/g,"");
+    }catch(e){}
+  }
+  return null;
+}
+// One in-flight promise per thumbnail: hover and the background prefetch share the same work.
+function clipFor(idx){
+  const t=thumbs[idx], path=localFilePath(core.status.url);
+  if(!t||!path||/^https?:/.test(path))return Promise.resolve(null);
+  const key=path+'|'+Math.round(Number(t.time)*10);
+  if(!previewCache.has(key)){
+    const p=makeClip(path,Number(t.time),idx);
+    previewCache.set(key,p);
+    p.then(c=>{if(!c){previewCache.delete(key);return;}if(overlayReady)overlay.postMessage('clip',{k:Math.round(Number(t.time)*10),clip:c});});
+    if(previewCache.size>120)previewCache.delete(previewCache.keys().next().value);
+  }
+  return previewCache.get(key);
+}
+async function runPreview(idx){
+  const clip=await clipFor(idx);
+  if(!clip||!visible||hoverIdx!==idx)return;
+  overlay.postMessage('preview',{index:idx,clip});
+}
+// Cut the remaining clips in the background, one at a time, so most hovers play instantly.
+async function prefetchClips(){
+  const gen=++clipGen;
+  for(let i=0;i<count;i++){
+    if(gen!==clipGen||!visible||!previewEnabled||!ffmpeg())return;
+    if(thumbs[i])await clipFor(i);
+  }
+}
+
 const READER="#!/usr/bin/env python3\nimport base64, json, os, struct, sys\nvideo, cache, duration_s, count_s = sys.argv[1:5]\nduration=float(duration_s); count=int(count_s)\ndef fail(msg):\n print(json.dumps({'ok':False,'error':msg},separators=(',',':'))); raise SystemExit\ntry: vst=os.stat(video)\nexcept Exception as e: fail(f'video stat failed: {e}')\ntry:\n with open(cache,'rb') as f: data=f.read()\nexcept Exception as e: fail(f'cannot read IINA cache: {e}')\nif len(data)<17: fail(f'IINA cache is too small ({len(data)} bytes)')\nif data[0]!=2: fail(f'unsupported IINA thumbnail cache version: {data[0]}')\nif struct.unpack_from('<Q',data,1)[0]!=vst.st_size or struct.unpack_from('<q',data,9)[0]!=int(vst.st_mtime): fail('IINA cache belongs to an older version of this video')\npos=17; items=[]\nwhile pos<len(data):\n if pos+16>len(data): fail('truncated thumbnail block header')\n block=struct.unpack_from('<q',data,pos)[0]; ts=struct.unpack_from('<d',data,pos+8)[0]; pos+=16\n n=block-8\n if block<8 or pos+n>len(data): fail('invalid thumbnail block length')\n jpeg=data[pos:pos+n]; pos+=n\n if jpeg[:2]==b'\\xff\\xd8': items.append((ts,jpeg))\nif not items: fail('IINA cache contains no JPEG thumbnails')\nselected=[]\nfor i in range(count):\n target=duration*(i+0.5)/count; ts,jpeg=min(items,key=lambda x:abs(x[0]-target))\n selected.append({'time':ts,'image':'data:image/jpeg;base64,'+base64.b64encode(jpeg).decode('ascii')})\nprint(json.dumps({'ok':True,'count':len(items),'thumbs':selected},separators=(',',':')))\n";
 
 function formatTime(seconds) { seconds=Math.max(0,Math.round(seconds)); const h=Math.floor(seconds/3600), m=Math.floor((seconds%3600)/60), s=seconds%60; return h ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}` : `${m}:${String(s).padStart(2,"0")}`; }
-function setupOverlay() { if(overlayReady)return; overlay.simpleMode(); overlay.setStyle(`:root{color-scheme:dark}html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}.shade{position:absolute;inset:0;background:rgba(0,0,0,.10);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);pointer-events:none}.shade.noBlur{backdrop-filter:none;-webkit-backdrop-filter:none}.panel{box-sizing:border-box;position:absolute;left:3%;right:3%;top:48px;bottom:56px;padding:0;background:transparent;border:0;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;overflow:hidden}.grid{display:grid;grid-template-columns:repeat(var(--cols),minmax(0,1fr));grid-template-rows:none;gap:8px;width:100%;height:100%}.thumb{position:relative;min-width:0;min-height:0;overflow:hidden;border-radius:7px;border:1px solid rgba(255,255,255,.16);background:#111;box-shadow:0 2px 8px rgba(0,0,0,.28);cursor:pointer;transition:box-shadow .12s ease,filter .12s ease}.thumb.empty{background:transparent;border-color:transparent;box-shadow:none}.thumb.empty:hover{box-shadow:none;filter:none}.thumb:hover{box-shadow:0 2px 8px rgba(0,0,0,.28);filter:brightness(1.08)}.thumb:hover::after{content:"";position:absolute;inset:0;border:2px solid rgba(255,255,255,.82);border-radius:7px;box-sizing:border-box;pointer-events:none}.thumb img{width:100%;height:100%;display:block;object-fit:cover}.scrollHint{position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);padding:4px 8px;border-radius:6px;color:rgba(255,255,255,.68);background:rgba(0,0,0,.52);font-size:11px;font-variant-numeric:tabular-nums;pointer-events:none}.time{position:absolute;left:6px;bottom:5px;padding:2px 5px;border-radius:4px;color:white;background:rgba(0,0,0,.72);font-size:10px;font-variant-numeric:tabular-nums}.status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:9px;padding:9px 13px;border-radius:9px;color:rgba(255,255,255,.86);background:rgba(0,0,0,.62);font-size:13px;white-space:nowrap;box-shadow:0 4px 18px rgba(0,0,0,.25)}.countControl{position:absolute;left:50%;right:auto;top:0px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:9px;color:rgba(255,255,255,.9);background:rgba(0,0,0,.52);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);font-size:12px;box-shadow:0 4px 18px rgba(0,0,0,.22)}.countControl > input[type="range"]{width:120px;height:16px;margin:0;accent-color:#fff;cursor:pointer}.countValue{min-width:22px;text-align:right;font-variant-numeric:tabular-nums;color:rgba(255,255,255,.82)}.blurToggle{display:flex;align-items:center;gap:5px;margin-left:6px;width:105px;height:28px;box-sizing:border-box;white-space:nowrap;color:rgba(255,255,255,.82);cursor:pointer}.blurToggle input{width:14px;height:14px;margin:0;accent-color:#fff;cursor:pointer}.spinner{width:13px;height:13px;border:2px solid rgba(255,255,255,.28);border-top-color:rgba(255,255,255,.9);border-radius:50%;animation:spin .75s linear infinite;flex:none}@keyframes spin{to{transform:rotate(360deg)}}`); overlay.onMessage('thumbnail-count',(value)=>{const n=Number(value);if(![10,15,20,30,40,60,100].includes(n))return;preferences.set('thumbnail_count',n);preferences.sync();count=n;thumbs=[];render('Loading thumbnails…',true);loadNativeCache();}); overlay.onMessage('background-blur',(value)=>{blurEnabled=Boolean(value);preferences.set('background_blur',blurEnabled);preferences.sync();render(thumbs.length?'':'Loading thumbnails…',!thumbs.length);}); overlayReady=true; }
+// Only one tick at a time, and cut short, so fast slider moves never stack sounds into a louder one.
+const TICK_SOUND='/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Media Keys.aif';
+let tickPlaying=false;
+function playTick(){if(tickPlaying)return;tickPlaying=true;utils.exec('/usr/bin/afplay',['-v','0.075','-t','0.1',TICK_SOUND]).catch(()=>{}).then(()=>{tickPlaying=false;});}
+function toggleBlur(){
+  blurEnabled=!blurEnabled;
+  playTick();
+  preferences.set('background_blur',blurEnabled);
+  preferences.sync();
+  render(thumbs.length?'':'Loading thumbnails…',!thumbs.length);
+}
+function togglePreview(){
+  if(!ffmpeg())return;
+  previewEnabled=!previewEnabled;
+  playTick();
+  if(previewEnabled)prefetchClips();
+  preferences.set('hover_preview',previewEnabled);
+  preferences.sync();
+  render(thumbs.length?'':'Loading thumbnails…',!thumbs.length);
+}
+function setupOverlay() { if(overlayReady)return; overlay.simpleMode(); overlay.setStyle(`:root{color-scheme:dark}*{text-shadow:none!important}html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden;font-family:ui-monospace,"SF Mono",Menlo,Monaco,monospace;text-transform:uppercase}.shade{position:absolute;inset:0;background:rgba(0,0,0,.10);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);pointer-events:none}.shade.noBlur{backdrop-filter:none;-webkit-backdrop-filter:none}.panel{box-sizing:border-box;position:absolute;left:3%;right:3%;top:48px;bottom:56px;padding:0;background:transparent;border:0;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;overflow:hidden}.grid{display:grid;grid-template-columns:repeat(var(--cols),minmax(0,1fr));grid-template-rows:none;gap:8px;width:100%;height:100%}.thumb{position:relative;min-width:0;min-height:0;overflow:hidden;border-radius:7px;border:1px solid rgba(255,255,255,.16);background:#111;box-shadow:0 2px 8px rgba(0,0,0,.28);cursor:pointer}.thumb.empty{background:transparent;border-color:transparent;box-shadow:none}.thumb.empty:hover{box-shadow:none;filter:none}.thumb:not(.empty):hover,.thumb.sel{z-index:1;border-color:rgba(255,255,255,.5);box-shadow:0 6px 22px rgba(0,0,0,.5)}.thumb img{width:100%;height:100%;display:block;object-fit:cover}.scrollHint{position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);padding:4px 8px;border-radius:6px;color:rgba(255,255,255,.68);background:rgba(0,0,0,.52);font-size:11px;font-variant-numeric:tabular-nums;pointer-events:none}.noTime .time{display:none}.thumb video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;pointer-events:none}.thumb video.playing{opacity:1}.time{z-index:2;position:absolute;left:.6em;bottom:.5em;padding:.2em .5em;border-radius:.4em;color:white;background:rgba(0,0,0,.36);font-size:var(--ts,10px);font-variant-numeric:tabular-nums}.status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:9px;padding:9px 13px;border-radius:9px;color:rgba(255,255,255,.86);background:rgba(0,0,0,.62);font-size:13px;white-space:nowrap;box-shadow:0 4px 18px rgba(0,0,0,.25)}.countControl{width:max-content;position:absolute;left:50%;right:auto;top:0px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:9px;color:rgba(255,255,255,.9);background:rgba(0,0,0,.52);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);font-size:12px;box-shadow:0 4px 18px rgba(0,0,0,.22)}.countControl > input[type="range"]{width:120px;height:16px;margin:0;accent-color:#fff;cursor:pointer}.countValue{min-width:22px;text-align:right;font-variant-numeric:tabular-nums;color:rgba(255,255,255,.82)}.blurToggle{display:flex;align-items:center;gap:5px;margin-left:6px;width:130px;height:28px;box-sizing:border-box;white-space:nowrap;color:rgba(255,255,255,.82);cursor:pointer}.blurToggle input{width:14px;height:14px;margin:0;accent-color:#fff;cursor:pointer}.previewToggle.disabled{opacity:.4;cursor:default}.spinner{width:13px;height:13px;border:2px solid rgba(255,255,255,.28);border-top-color:rgba(255,255,255,.9);border-radius:50%;animation:spin .75s linear infinite;flex:none}@keyframes spin{to{transform:rotate(360deg)}}`); overlay.onMessage('thumbnail-count',(value)=>{const n=Number(value);if(![10,15,20,30,40,60,100].includes(n))return;preferences.set('thumbnail_count',n);preferences.sync();count=n;thumbs=[];render('Loading thumbnails…',true);loadNativeCache();}); overlay.onMessage('slider-tick',playTick); overlay.onMessage('webview-ready',async()=>{try{const r=await utils.exec('/usr/bin/base64',['-i',TICK_SOUND]);if(r.status===0)overlay.postMessage('tick-sound','data:audio/x-aiff;base64,'+String(r.stdout).replace(/\s/g,''));}catch(e){}}); overlay.onMessage('hover',(i)=>{clearTimeout(hoverTimer);hoverIdx=Number(i);if(!previewEnabled||!ffmpeg())return;const idx=hoverIdx;hoverTimer=setTimeout(()=>runPreview(idx),60);}); overlay.onMessage('hover-end',()=>{clearTimeout(hoverTimer);hoverIdx=-1;}); overlay.onMessage('background-blur',(value)=>{blurEnabled=Boolean(value);preferences.set('background_blur',blurEnabled);preferences.sync();render(thumbs.length?'':'Loading thumbnails…',!thumbs.length);}); overlayReady=true; }
 function gridGeometry() {
   const frame=core.window.frame;
   const W=Number(frame.width)||0, H=Number(frame.height)||0;
@@ -53,11 +135,13 @@ function render(statusText='',loading=false) {
   let grid='';
   for(let i=0;i<count;i++){
     const t=thumbs[i];
-    grid += t ? `<div class="thumb"><img src="${t.image}" draggable="false"><div class="time">${formatTime(t.time)}</div></div>` : `<div class="thumb empty"></div>`;
+    grid += t ? `<div class="thumb${i===selected?' sel':''}" data-k="${t?Math.round(Number(t.time)*10):''}" onmouseenter="window.__pvGo&&window.__pvGo(this);iina.postMessage('hover',${i})" onmouseleave="iina.postMessage('hover-end');window.__pvStop&&window.__pvStop()"><img src="${t.image}" draggable="false"><div class="time">${formatTime(t.time)}</div></div>` : `<div class="thumb empty"></div>`;
   }
-  const gridStyle=`--cols:${g.cols};position:absolute;left:${g.left.toFixed(2)}px;top:${g.top.toFixed(2)}px;width:${g.width.toFixed(2)}px;height:${g.height.toFixed(2)}px;grid-template-rows:repeat(${g.rows},minmax(0,1fr));`;
+  // Timestamps shrink with the thumbnails (10px at full size) and disappear once they would crowd them.
+  const ts=Math.min(10,g.cellW*.07), hideTime=g.cellW<90;
+  const gridStyle=`--cols:${g.cols};--ts:${ts.toFixed(2)}px;position:absolute;left:${g.left.toFixed(2)}px;top:${g.top.toFixed(2)}px;width:${g.width.toFixed(2)}px;height:${g.height.toFixed(2)}px;grid-template-rows:repeat(${g.rows},minmax(0,1fr));`;
   const blurClass=blurEnabled?'':' noBlur';
-  overlay.setContent(`<div class="shade${blurClass}"></div><div class="panel"><div class="countControl"><span>Thumbnails</span><input data-clickable type="range" min="0" max="6" step="1" value="${[10,15,20,30,40,60,100].indexOf(count)}" aria-label="Thumbnail count" oninput="this.nextElementSibling.textContent=[10,15,20,30,40,60,100][this.value]" onchange="iina.postMessage('thumbnail-count', [10,15,20,30,40,60,100][this.value])"><span class="countValue">${count}</span><div class="blurToggle" role="checkbox" aria-checked="${blurEnabled}"><input type="checkbox" tabindex="-1" ${blurEnabled?'checked':''} style="pointer-events:none"><span>Background blur</span></div></div><div class="grid" style="${gridStyle}">${grid}</div>${statusText?`<div class="status">${loading?'<span class="spinner"></span>':''}<span>${statusText}</span></div>`:''}</div>`);
+  overlay.setContent(`<div class="shade${blurClass}"></div><div class="panel"><div class="countControl"><span>Thumbnails</span><input data-clickable type="range" min="0" max="6" step="1" value="${[10,15,20,30,40,60,100].indexOf(count)}" aria-label="Thumbnail count" oninput="this.nextElementSibling.textContent=[10,15,20,30,40,60,100][this.value];(window.__tick||function(){iina.postMessage('slider-tick')})()" onchange="iina.postMessage('thumbnail-count', [10,15,20,30,40,60,100][this.value])"><span class="countValue">${count}</span><div class="blurToggle" role="checkbox" aria-checked="${blurEnabled}"><input type="checkbox" tabindex="-1" ${blurEnabled?'checked':''} style="pointer-events:none"><span>Background blur</span></div><div class="blurToggle previewToggle${ffmpeg()?'':' disabled'}" style="width:${barLayout().prevW}px" role="checkbox" aria-checked="${previewEnabled&&!!ffmpeg()}"><input type="checkbox" tabindex="-1" ${previewEnabled&&ffmpeg()?'checked':''} ${ffmpeg()?'':'disabled'} style="pointer-events:none"><span>${previewLabel()}</span></div></div><div class="grid${hideTime?' noTime':''}" data-pv="${previewEnabled&&ffmpeg()?1:0}" style="${gridStyle}">${grid}</div><img style="display:none" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" onload="if(!window.__pv){window.__pv=1;window.__tick=function(){var ac=window.__ac,buf=window.__tickBuf;if(!ac||!buf){iina.postMessage('slider-tick');return;}if(ac.state==='suspended')ac.resume();var t=ac.currentTime;if(window.__tickSrc){window.__tickGain.gain.setTargetAtTime(0,t,0.004);try{window.__tickSrc.stop(t+0.03);}catch(e){}}var s=ac.createBufferSource(),g=ac.createGain();g.gain.value=0.075;s.buffer=buf;s.connect(g);g.connect(ac.destination);s.start(t,0,0.12);window.__tickSrc=s;window.__tickGain=g;};iina.onMessage('tick-sound',function(d){try{var b=atob(d.split(',')[1]),u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);window.__ac=new (window.AudioContext||window.webkitAudioContext)();window.__ac.decodeAudioData(u.buffer,function(x){window.__tickBuf=x;},function(){});}catch(e){}});iina.postMessage('webview-ready');window.__clips={};window.__pvStop=function(){var v=window.__pvV;if(v){v.pause();v.remove();}window.__pvV=null;};window.__pvPlay=function(el,clip){try{if(!el||el.parentNode.dataset.pv!=='1'||!el.matches(':hover')||(window.__pvV&&window.__pvV.parentNode===el))return;window.__pvStop();var v=document.createElement('video');v.muted=true;v.loop=true;v.playsInline=true;var show=function(){v.classList.add('playing');};if(v.requestVideoFrameCallback)v.requestVideoFrameCallback(show);else v.addEventListener('playing',show);v.src=clip;el.appendChild(v);window.__pvV=v;v.play().catch(function(){});}catch(e){}};window.__pvGo=function(el){var c=window.__clips[el.dataset.k];if(c)setTimeout(function(){window.__pvPlay(el,c);},15);};iina.onMessage('clip',function(d){window.__clips[d.k]=d.clip;});iina.onMessage('clips-reset',function(){window.__clips={};});iina.onMessage('preview',function(d){window.__pvPlay(document.querySelectorAll('.thumb')[d.index],d.clip);});}">${statusText?`<div class="status">${loading?'<span class="spinner"></span>':''}<span>${statusText}</span></div>`:''}</div>`);
 }
 function stopResizeWatch(){ if(resizeWatchTimer){clearInterval(resizeWatchTimer);resizeWatchTimer=null;} lastResizeW=0; lastResizeH=0; }
 function startResizeWatch(){
@@ -76,7 +160,7 @@ function startResizeWatch(){
     render(thumbs.length?'':'Loading thumbnails…',!thumbs.length);
   },33);
 }
-function closeOverlay() { visible=false; if(overlayReady){overlay.hide();overlay.setClickable(false);} if(pollTimer){clearInterval(pollTimer);pollTimer=null;} stopResizeWatch(); }
+function closeOverlay() { visible=false; clipGen++; selected=-1; if(overlayReady){overlay.hide();overlay.setClickable(false);} if(pollTimer){clearInterval(pollTimer);pollTimer=null;} stopResizeWatch(); }
 function installMouseHandler() {
   if(mouseHandlerInstalled)return;
   input.onMouseUp(input.MOUSE,({x,y})=>{
@@ -93,15 +177,17 @@ function installMouseHandler() {
     // The control bar is fixed at the horizontal center of the video,
     // independent of the thumbnail grid width/count.
     const controlCenter=W/2;
-    const blurLeft=controlCenter+65;
-    const blurRight=controlCenter+205;
+    const bar=barLayout();
+    const blurLeft=controlCenter+bar.blurL-2;
+    const blurRight=controlCenter+bar.blurR+2;
     const blurTop=panelY;
     const blurBottom=blurTop+40;
+    if(x>=controlCenter+bar.prevL-2&&x<=controlCenter+bar.prevR+2&&topY>=blurTop&&topY<=blurBottom){
+      togglePreview();
+      return true;
+    }
     if(x>=blurLeft&&x<=blurRight&&topY>=blurTop&&topY<=blurBottom){
-      blurEnabled=!blurEnabled;
-      preferences.set('background_blur',blurEnabled);
-      preferences.sync();
-      render(thumbs.length?'':'Loading thumbnails…',!thumbs.length);
+      toggleBlur();
       return true;
     }
     const g=gridGeometry();
@@ -116,6 +202,25 @@ function installMouseHandler() {
     if(t&&Number.isFinite(Number(t.time))){core.seekTo(Number(t.time));closeOverlay();}
     return true;
   },input.PRIORITY_HIGH);
+  // Keyboard: arrows move a highlight, Enter jumps, Esc closes.
+  // Handlers pass the key through (return false) while the viewer is closed.
+  const moveSelection=(dx,dy)=>{
+    if(!thumbs.length)return true;
+    if(selected<0)selected=0;
+    else{
+      const cols=gridGeometry().cols||1;
+      const next=selected+dx+dy*cols;
+      if(next>=0&&next<count&&thumbs[next])selected=next;
+    }
+    render();
+    return true;
+  };
+  // IINA's menu bar claims every key bound in input.conf (arrows seek, Enter is
+  // next-file, ...) before plugins see it, so each action also gets a Shift
+  // variant, which IINA leaves unbound by default.
+  const jump=()=>{const t=thumbs[selected];if(t&&Number.isFinite(Number(t.time))){core.seekTo(Number(t.time));closeOverlay();}return true;};
+  const keys={LEFT:()=>moveSelection(-1,0),RIGHT:()=>moveSelection(1,0),UP:()=>moveSelection(0,-1),DOWN:()=>moveSelection(0,1),ENTER:jump,ESC:()=>{closeOverlay();return true;}};
+  for(const k of Object.keys(keys))for(const name of [k,'Shift+'+k])input.onKeyDown(name,()=>visible?keys[k]():false,input.PRIORITY_HIGH);
   mouseHandlerInstalled=true;
 }
 function pythonPath(){for(const p of ['/opt/homebrew/bin/python3','/usr/local/bin/python3','/usr/bin/python3','python3'])if(utils.fileInPath(p))return p;return null;}
@@ -180,10 +285,10 @@ async function readNativeCache(){
   }catch(e){return {ok:false,error:'Could not read IINA thumbnail cache: '+String(e.message||e)}
   }
 }
-async function loadNativeCache() { refreshCount(); const r=await readNativeCache(); if(r.ok){thumbs=r.thumbs;render();return true;} thumbs=[]; const waiting=!r.error || r.error.includes('has not generated') || r.error.includes('directory does not exist') || r.error.includes('not ready'); render(waiting?'Loading thumbnails…':r.error,waiting); return false; }
+async function loadNativeCache() { refreshCount(); const r=await readNativeCache(); if(r.ok){thumbs=r.thumbs;render();if(previewEnabled&&ffmpeg())prefetchClips();return true;} thumbs=[]; const waiting=!r.error || r.error.includes('has not generated') || r.error.includes('directory does not exist') || r.error.includes('not ready'); render(waiting?'Loading thumbnails…':r.error,waiting); return false; }
 function watchCache() { if(pollTimer)clearInterval(pollTimer); let tries=0; pollTimer=setInterval(async()=>{tries++; if(!visible){clearInterval(pollTimer);pollTimer=null;return;} if(await loadNativeCache()||tries>=60){clearInterval(pollTimer);pollTimer=null;}},1000); }
 async function toggle() { if(visible){closeOverlay();return;} refreshCount(); visible=true;setupOverlay();installMouseHandler();overlay.setClickable(true);overlay.show(); startResizeWatch(); if(!(await loadNativeCache()))watchCache(); }
-event.on('iina.file-loaded',()=>{thumbs=[];scrollStart=0; if(visible)render('Loading thumbnails…',true);});
+event.on('iina.file-loaded',()=>{thumbs=[];scrollStart=0;selected=-1;previewCache.clear();if(overlayReady)overlay.postMessage('clips-reset',{}); if(visible)render('Loading thumbnails…',true);});
 event.on('iina.thumbnails-ready',()=>{if(visible)loadNativeCache();});
 event.on('iina.window-resized',()=>{
   if(!visible)return;
