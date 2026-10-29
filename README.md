@@ -1,5 +1,7 @@
 # Thumbnails for IINA
 
+*Feel free to contact me if you have any questions or feedback about this plugin. My details are in the [Author](#author) section below.*
+
 An IINA plugin that shows clickable thumbnails for each video.
 
 ![Thumbnails preview](screenshots/screenshot.png)
