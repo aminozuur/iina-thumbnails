@@ -1,7 +1,5 @@
 # Thumbnails for IINA
 
-*Feel free to contact me if you have any questions or feedback about this plugin. My details are in the [Author](#author) section below.*
-
 An IINA plugin that shows clickable thumbnails for each video.
 
 ![Thumbnails preview](screenshots/screenshot.png)
@@ -61,6 +59,8 @@ Thumbnails needs two IINA permissions:
 - **Add overlays on videos** — shows the thumbnails and controls on top of the video.
 
 ## Author
+
+Feel free to contact me if you have any questions or feedback about this plugin.
 
 **Amin Eftegarie**
 
